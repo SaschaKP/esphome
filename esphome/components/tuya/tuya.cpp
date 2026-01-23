@@ -24,7 +24,22 @@ static const int MAX_RETRIES = 5;
 static constexpr size_t MAX_DATAPOINT_LOG_BYTES = 16;
 
 void Tuya::setup() {
+#ifndef TUYA_LOW_ENERGY
   this->set_interval("heartbeat", 15000, [this] { this->send_empty_command_(TuyaCommandType::HEARTBEAT); });
+#else
+  this->protocol_version_ = 0;
+  this->init_state_ = TuyaInitState::INIT_PRODUCT;
+  this->set_retry(
+      "initquery", 100, 20,
+      [this](const uint8_t remaining_attempts) {
+        if (remaining_attempts > 0) {
+          this->send_empty_command_(TuyaCommandType::PRODUCT_QUERY);
+          return RetryResult::RETRY;
+        }
+        return RetryResult::DONE;
+      },
+      1);
+#endif
   if (this->status_pin_ != nullptr) {
     this->status_pin_->digital_write(false);
   }
@@ -183,11 +198,19 @@ void Tuya::handle_command_(uint8_t command, uint8_t version, const uint8_t *buff
         this->product_ = R"({"p":"INVALID"})";
       }
       if (this->init_state_ == TuyaInitState::INIT_PRODUCT) {
+#ifndef TUYA_LOW_ENERGY
         this->init_state_ = TuyaInitState::INIT_CONF;
         this->send_empty_command_(TuyaCommandType::CONF_QUERY);
+#else
+        this->cancel_retry("initquery");
+        this->init_state_ = TuyaInitState::INIT_DATAPOINT;
+        ESP_LOGV(TAG, "Configured WIFI_STATE periodic send");
+        this->set_interval("wifi", 1000, [this] { this->send_wifi_status_(); });
+#endif
       }
       break;
     }
+#ifndef TUYA_LOW_ENERGY
     case TuyaCommandType::CONF_QUERY: {
       if (len >= 2) {
         this->status_pin_reported_ = buffer[0];
@@ -274,26 +297,6 @@ void Tuya::handle_command_(uint8_t command, uint8_t version, const uint8_t *buff
     case TuyaCommandType::WIFI_TEST:
       this->send_command_(TuyaCommand{.cmd = TuyaCommandType::WIFI_TEST, .payload = std::vector<uint8_t>{0x00, 0x00}});
       break;
-    case TuyaCommandType::WIFI_RSSI:
-      this->send_command_(
-          TuyaCommand{.cmd = TuyaCommandType::WIFI_RSSI, .payload = std::vector<uint8_t>{get_wifi_rssi_()}});
-      break;
-    case TuyaCommandType::LOCAL_TIME_QUERY:
-#ifdef USE_TIME
-      if (this->time_id_ != nullptr) {
-        this->send_local_time_();
-
-        if (!this->time_sync_callback_registered_) {
-          // tuya mcu supports time, so we let them know when our time changed
-          this->time_id_->add_on_time_sync_callback([this] { this->send_local_time_(); });
-          this->time_sync_callback_registered_ = true;
-        }
-      } else
-#endif
-      {
-        ESP_LOGW(TAG, "LOCAL_TIME_QUERY is not handled because time is not configured");
-      }
-      break;
     case TuyaCommandType::VACUUM_MAP_UPLOAD:
       this->send_command_(
           TuyaCommand{.cmd = TuyaCommandType::VACUUM_MAP_UPLOAD, .payload = std::vector<uint8_t>{0x01}});
@@ -331,6 +334,97 @@ void Tuya::handle_command_(uint8_t command, uint8_t version, const uint8_t *buff
       }
       break;
     }
+#else
+    case TuyaCommandType::WIFI_STATE:
+      // wifi-state ACK from MCU
+      break;
+    case TuyaCommandType::WIFI_RESET:  // enable AP (factory) mode (not implemented yet), same as pair
+      this->send_empty_command_(TuyaCommandType::WIFI_RESET);
+      this->cut_cloud_mode_ = true;
+      break;
+    case TuyaCommandType::WIFI_PAIR:  // we'll remain UP for at most 2 minutes (maybe less with boot time)
+      // len > 0, buffer[0] contains 0x00 for EZ mode or 0x01 for AP mode
+      /*
+      if (len > 0) {
+        buffer[0];
+      }*/
+      this->send_empty_command_(TuyaCommandType::WIFI_PAIR);
+      this->cut_cloud_mode_ = true;
+      break;
+    case TuyaCommandType::WIFI_TEST:
+      // we report 0x01 (OK) with current quality, never send 0x00 since there are implications in doing that
+      this->send_command_(TuyaCommand{.cmd = TuyaCommandType::WIFI_TEST,
+                                      .payload = std::vector<uint8_t>{0x01, get_quality_perc_quad_()}});
+      break;
+    case TuyaCommandType::DATAPOINT_REPORT_ASYNC:
+    case TuyaCommandType::DATAPOINT_REPORT_SYNC:
+      if (this->init_state_ == TuyaInitState::INIT_DATAPOINT) {
+        this->init_state_ = TuyaInitState::INIT_DONE;
+        this->set_timeout("datapoint_dump", 1000, [this] { this->dump_config(); });
+        this->initialized_callback_.call();
+      }
+      this->handle_datapoints_(buffer, len);
+      // after updating everything we report the confirmation of sending them "to the cloud" - the device could stay a
+      // little longer, postpone this
+      if (command_type == TuyaCommandType::DATAPOINT_REPORT_SYNC) {
+        this->set_retry(
+            "", 100, 3,
+            [this](const uint8_t remaining_attempts) {
+              if (remaining_attempts > 0) {
+                return RetryResult::RETRY;
+              }
+              this->send_command_(
+                  TuyaCommand{.cmd = TuyaCommandType::DATAPOINT_REPORT_SYNC,
+                              .payload = std::vector<uint8_t>{0x00}});  // 0x00 == report OK - 0x01 report FAIL
+              return RetryResult::DONE;
+            },
+            1);
+      } else {
+        this->set_retry(
+            "", 100, 3,
+            [this](const uint8_t remaining_attempts) {
+              if (remaining_attempts > 0) {
+                return RetryResult::RETRY;
+              }
+              this->send_command_(
+                  TuyaCommand{.cmd = TuyaCommandType::DATAPOINT_REPORT_ASYNC,
+                              .payload = std::vector<uint8_t>{0x00}});  // 0x00 == report OK - 0x01 report FAIL
+              return RetryResult::DONE;
+            },
+            1);
+      }
+      break;
+    case TuyaCommandType::DATAPOINT_DELIVER:
+      break;
+    case TuyaCommandType::DATAPOINT_CACHE_DELIVER:
+      /*
+       * TODO: we need to make this work for multiple cached commands done on
+       * battery powered devices, example:
+       * a device that does an action on multiple DP delayed, as a lock or an
+       * intermittent light, or anything else with that behaviour
+       */
+      break;
+#endif
+    case TuyaCommandType::WIFI_RSSI:
+      this->send_command_(
+          TuyaCommand{.cmd = TuyaCommandType::WIFI_RSSI, .payload = std::vector<uint8_t>{get_wifi_rssi_()}});
+      break;
+    case TuyaCommandType::LOCAL_TIME_QUERY:
+#ifdef USE_TIME
+      if (this->time_id_ != nullptr) {
+        this->send_local_time_();
+
+        if (!this->time_sync_callback_registered_) {
+          // tuya mcu supports time, so we let them know when our time changed
+          this->time_id_->add_on_time_sync_callback([this] { this->send_local_time_(); });
+          this->time_sync_callback_registered_ = true;
+        }
+      } else
+#endif
+      {
+        ESP_LOGW(TAG, "LOCAL_TIME_QUERY is not handled because time is not configured");
+      }
+      break;
     default:
       ESP_LOGE(TAG, "Invalid command (0x%02X) received", command);
   }
@@ -460,6 +554,7 @@ void Tuya::send_raw_command_(TuyaCommand command) {
     case TuyaCommandType::PRODUCT_QUERY:
       this->expected_response_ = TuyaCommandType::PRODUCT_QUERY;
       break;
+#ifndef TUYA_LOW_ENERGY
     case TuyaCommandType::CONF_QUERY:
       this->expected_response_ = TuyaCommandType::CONF_QUERY;
       break;
@@ -467,6 +562,7 @@ void Tuya::send_raw_command_(TuyaCommand command) {
     case TuyaCommandType::DATAPOINT_QUERY:
       this->expected_response_ = TuyaCommandType::DATAPOINT_REPORT_ASYNC;
       break;
+#endif
     default:
       break;
   }
@@ -539,8 +635,10 @@ uint8_t Tuya::get_wifi_status_code_() {
   if (network::is_connected()) {
     status = 0x03;
 
-    // Protocol version 3 also supports specifying when connected to "the cloud"
-    if (this->protocol_version_ >= 0x03 && remote_is_connected()) {
+    // Protocol version 3 and low energy (0) also supports specifying when connected to "the cloud" - in pair mode, we
+    // try to keep the device as long as possible activated (version 0) for such wi-fi devices
+    if ((this->protocol_version_ >= 0x03 || (!this->cut_cloud_mode_ && this->protocol_version_ == 0x00)) &&
+        remote_is_connected()) {
       status = 0x04;
     }
   } else {
@@ -561,6 +659,21 @@ uint8_t Tuya::get_wifi_rssi_() {
 #endif
 
   return 0;
+}
+
+uint8_t Tuya::get_quality_perc_quad_(uint8_t perfect_rssi, uint8_t worst_rssi) {
+  uint8_t rssi = get_wifi_rssi_();
+  uint8_t nominal_rssi = (worst_rssi - perfect_rssi);
+  int16_t signal_quality =
+      ((100 * nominal_rssi * nominal_rssi - (rssi - perfect_rssi)) * (15 * nominal_rssi + 62 * (rssi - perfect_rssi))) /
+      (nominal_rssi * nominal_rssi);
+
+  if (signal_quality > 100) {
+    signal_quality = 100;
+  } else if (signal_quality < 1) {
+    signal_quality = 1;
+  }
+  return (uint8_t) signal_quality;
 }
 
 void Tuya::send_wifi_status_() {
