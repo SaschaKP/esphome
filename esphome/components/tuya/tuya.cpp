@@ -317,6 +317,27 @@ void Tuya::handle_command_(uint8_t command, uint8_t version, const uint8_t *buff
     case TuyaCommandType::WIFI_TEST:
       this->send_command_(TuyaCommand{.cmd = TuyaCommandType::WIFI_TEST, .payload = std::vector<uint8_t>{0x00, 0x00}});
       break;
+	    case TuyaCommandType::GMT_TIME_QUERY:
+#ifdef USE_TIME
+      if (this->time_id_ != nullptr) {
+        this->send_gmt_time_();
+
+        if (!this->gmt_time_sync_callback_registered_) {
+          // tuya mcu supports time, so we let them know when our time changed
+          this->time_id_->add_on_time_sync_callback([this] { this->send_gmt_time_(); });
+          this->gmt_time_sync_callback_registered_ = true;
+        }
+      } else
+#endif
+      {
+        ESP_LOGW(TAG, "GMT_TIME_QUERY is not handled because time is not configured");
+      }
+      break;
+    case TuyaCommandType::VACUUM_MAP_UPLOAD:
+      this->send_command_(
+          TuyaCommand{.cmd = TuyaCommandType::VACUUM_MAP_UPLOAD, .payload = std::vector<uint8_t>{0x01}});
+      ESP_LOGW(TAG, "Vacuum map upload requested, responding that it is not enabled.");
+      break;
 #else
     case TuyaCommandType::WIFI_STATE:
       // wifi-state ACK from MCU
@@ -393,27 +414,6 @@ void Tuya::handle_command_(uint8_t command, uint8_t version, const uint8_t *buff
       {
         ESP_LOGW(TAG, "LOCAL_TIME_QUERY is not handled because time is not configured");
       }
-      break;
-    case TuyaCommandType::GMT_TIME_QUERY:
-#ifdef USE_TIME
-      if (this->time_id_ != nullptr) {
-        this->send_gmt_time_();
-
-        if (!this->gmt_time_sync_callback_registered_) {
-          // tuya mcu supports time, so we let them know when our time changed
-          this->time_id_->add_on_time_sync_callback([this] { this->send_gmt_time_(); });
-          this->gmt_time_sync_callback_registered_ = true;
-        }
-      } else
-#endif
-      {
-        ESP_LOGW(TAG, "GMT_TIME_QUERY is not handled because time is not configured");
-      }
-      break;
-    case TuyaCommandType::VACUUM_MAP_UPLOAD:
-      this->send_command_(
-          TuyaCommand{.cmd = TuyaCommandType::VACUUM_MAP_UPLOAD, .payload = std::vector<uint8_t>{0x01}});
-      ESP_LOGW(TAG, "Vacuum map upload requested, responding that it is not enabled.");
       break;
     case TuyaCommandType::GET_NETWORK_STATUS: {
       uint8_t wifi_status = this->get_wifi_status_code_();
