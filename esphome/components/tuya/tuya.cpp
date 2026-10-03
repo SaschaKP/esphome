@@ -221,7 +221,7 @@ void Tuya::handle_command_(uint8_t command, uint8_t version, const uint8_t *buff
         this->init_state_ = TuyaInitState::INIT_CONF;
         this->send_empty_command_(TuyaCommandType::CONF_QUERY);
 #else
-        this->cancel_retry("initquery");
+        this->cancel_interval("initquery");
         this->init_state_ = TuyaInitState::INIT_DATAPOINT;
         ESP_LOGV(TAG, "Configured WIFI_STATE periodic send");
         this->set_interval("wifi", 1000, [this] { this->send_wifi_status_(); });
@@ -350,31 +350,17 @@ void Tuya::handle_command_(uint8_t command, uint8_t version, const uint8_t *buff
       // after updating everything we report the confirmation of sending them "to the cloud" - the device could stay a
       // little longer, postpone this
       if (command_type == TuyaCommandType::DATAPOINT_REPORT_SYNC) {
-        this->set_retry(
-            "", 100, 3,
-            [this](const uint8_t remaining_attempts) {
-              if (remaining_attempts > 0) {
-                return RetryResult::RETRY;
-              }
-              this->send_command_(
-                  TuyaCommand{.cmd = TuyaCommandType::DATAPOINT_REPORT_SYNC,
-                              .payload = std::vector<uint8_t>{0x00}});  // 0x00 == report OK - 0x01 report FAIL
-              return RetryResult::DONE;
-            },
-            1);
+        this->set_timeout("report_sync_delay", 300, [this]() {
+          this->send_command_(
+              TuyaCommand{.cmd = TuyaCommandType::DATAPOINT_REPORT_SYNC,
+                          .payload = std::vector<uint8_t>{0x00}});  // 0x00 == report OK - 0x01 report FAIL
+        });
       } else {
-        this->set_retry(
-            "", 100, 3,
-            [this](const uint8_t remaining_attempts) {
-              if (remaining_attempts > 0) {
-                return RetryResult::RETRY;
-              }
-              this->send_command_(
-                  TuyaCommand{.cmd = TuyaCommandType::DATAPOINT_REPORT_ASYNC,
-                              .payload = std::vector<uint8_t>{0x00}});  // 0x00 == report OK - 0x01 report FAIL
-              return RetryResult::DONE;
-            },
-            1);
+        this->set_timeout("report_async_delay", 300, [this]() {
+          this->send_command_(
+              TuyaCommand{.cmd = TuyaCommandType::DATAPOINT_REPORT_ASYNC,
+                          .payload = std::vector<uint8_t>{0x00}});  // 0x00 == report OK - 0x01 report FAIL
+        });
       }
       break;
     case TuyaCommandType::DATAPOINT_DELIVER:
