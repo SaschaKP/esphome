@@ -75,6 +75,7 @@ enum class TuyaCommandType : uint8_t {
   DATAPOINT_DELIVER = 0x09,
   DATAPOINT_CACHE_DELIVER = 0x10,
   WIFI_RSSI = 0x0B,
+  GMT_TIME_QUERY = 0x0C,
 #endif
 };
 
