@@ -338,6 +338,38 @@ void Tuya::handle_command_(uint8_t command, uint8_t version, const uint8_t *buff
           TuyaCommand{.cmd = TuyaCommandType::VACUUM_MAP_UPLOAD, .payload = std::vector<uint8_t>{0x01}});
       ESP_LOGW(TAG, "Vacuum map upload requested, responding that it is not enabled.");
       break;
+	case TuyaCommandType::GET_NETWORK_STATUS: {
+      uint8_t wifi_status = this->get_wifi_status_code_();
+
+      this->send_command_(
+          TuyaCommand{.cmd = TuyaCommandType::GET_NETWORK_STATUS, .payload = std::vector<uint8_t>{wifi_status}});
+      ESP_LOGV(TAG, "Network status requested, reported as %i", wifi_status);
+      break;
+    }
+    case TuyaCommandType::EXTENDED_SERVICES: {
+      uint8_t subcommand = buffer[0];
+      switch ((TuyaExtendedServicesCommandType) subcommand) {
+        case TuyaExtendedServicesCommandType::RESET_NOTIFICATION: {
+          this->send_command_(
+              TuyaCommand{.cmd = TuyaCommandType::EXTENDED_SERVICES,
+                          .payload = std::vector<uint8_t>{
+                              static_cast<uint8_t>(TuyaExtendedServicesCommandType::RESET_NOTIFICATION), 0x00}});
+          ESP_LOGV(TAG, "Reset status notification enabled");
+          break;
+        }
+        case TuyaExtendedServicesCommandType::MODULE_RESET: {
+          ESP_LOGE(TAG, "EXTENDED_SERVICES::MODULE_RESET is not handled");
+          break;
+        }
+        case TuyaExtendedServicesCommandType::UPDATE_IN_PROGRESS: {
+          ESP_LOGE(TAG, "EXTENDED_SERVICES::UPDATE_IN_PROGRESS is not handled");
+          break;
+        }
+        default:
+          ESP_LOGE(TAG, "Invalid extended services subcommand (0x%02X) received", subcommand);
+      }
+      break;
+    }
 #else
     case TuyaCommandType::WIFI_STATE:
       // wifi-state ACK from MCU
@@ -415,38 +447,6 @@ void Tuya::handle_command_(uint8_t command, uint8_t version, const uint8_t *buff
         ESP_LOGW(TAG, "LOCAL_TIME_QUERY is not handled because time is not configured");
       }
       break;
-    case TuyaCommandType::GET_NETWORK_STATUS: {
-      uint8_t wifi_status = this->get_wifi_status_code_();
-
-      this->send_command_(
-          TuyaCommand{.cmd = TuyaCommandType::GET_NETWORK_STATUS, .payload = std::vector<uint8_t>{wifi_status}});
-      ESP_LOGV(TAG, "Network status requested, reported as %i", wifi_status);
-      break;
-    }
-    case TuyaCommandType::EXTENDED_SERVICES: {
-      uint8_t subcommand = buffer[0];
-      switch ((TuyaExtendedServicesCommandType) subcommand) {
-        case TuyaExtendedServicesCommandType::RESET_NOTIFICATION: {
-          this->send_command_(
-              TuyaCommand{.cmd = TuyaCommandType::EXTENDED_SERVICES,
-                          .payload = std::vector<uint8_t>{
-                              static_cast<uint8_t>(TuyaExtendedServicesCommandType::RESET_NOTIFICATION), 0x00}});
-          ESP_LOGV(TAG, "Reset status notification enabled");
-          break;
-        }
-        case TuyaExtendedServicesCommandType::MODULE_RESET: {
-          ESP_LOGE(TAG, "EXTENDED_SERVICES::MODULE_RESET is not handled");
-          break;
-        }
-        case TuyaExtendedServicesCommandType::UPDATE_IN_PROGRESS: {
-          ESP_LOGE(TAG, "EXTENDED_SERVICES::UPDATE_IN_PROGRESS is not handled");
-          break;
-        }
-        default:
-          ESP_LOGE(TAG, "Invalid extended services subcommand (0x%02X) received", subcommand);
-      }
-      break;
-    }
     default:
       ESP_LOGE(TAG, "Invalid command (0x%02X) received", command);
   }
@@ -735,6 +735,7 @@ void Tuya::send_local_time_() {
   }
   this->send_command_(TuyaCommand{.cmd = TuyaCommandType::LOCAL_TIME_QUERY, .payload = payload});
 }
+#ifndef TUYA_LOW_ENERGY
 void Tuya::send_gmt_time_() {
   std::vector<uint8_t> payload;
   ESPTime now = this->time_id_->utcnow();
@@ -754,6 +755,7 @@ void Tuya::send_gmt_time_() {
   }
   this->send_command_(TuyaCommand{.cmd = TuyaCommandType::GMT_TIME_QUERY, .payload = payload});
 }
+#endif
 #endif
 
 void Tuya::set_raw_datapoint_value(uint8_t datapoint_id, const std::vector<uint8_t> &value) {
