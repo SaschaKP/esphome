@@ -36,22 +36,22 @@ static bool network_is_connected() {
 void Tuya::setup() {
 #ifndef TUYA_LOW_ENERGY
   this->set_interval("heartbeat", 15000, [this] { this->send_empty_command_(TuyaCommandType::HEARTBEAT); });
-  if (this->status_pin_ != nullptr) {
-    this->status_pin_->digital_write(false);
 #else
   this->protocol_version_ = 0;
   this->init_state_ = TuyaInitState::INIT_PRODUCT;
-  this->set_retry(
-      "initquery", 100, 20,
-      [this](const uint8_t remaining_attempts) {
-        if (remaining_attempts > 0) {
-          this->send_empty_command_(TuyaCommandType::PRODUCT_QUERY);
-          return RetryResult::RETRY;
-        }
-        return RetryResult::DONE;
-      },
-      1);
+  
+  this->set_interval("initquery", 100, [this]() {
+    static uint8_t remaining_attempts = 20;
+    if (remaining_attempts > 0) {
+      this->send_empty_command_(TuyaCommandType::PRODUCT_QUERY);
+      remaining_attempts--;
+    } else {
+      this->cancel_interval("initquery");
+    }
+  });
 #endif
+  if (this->status_pin_ != nullptr) {
+    this->status_pin_->digital_write(false);
   }
 }
 
