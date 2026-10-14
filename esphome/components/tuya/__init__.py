@@ -45,6 +45,7 @@ DATAPOINT_TYPES = {
 
 
 CONF_TUYA_ID = "tuya_id"
+CONF_LOW_ENERGY = "low_energy"
 
 
 def _validate_time_options(config: ConfigType) -> ConfigType:
@@ -56,8 +57,6 @@ def _validate_time_options(config: ConfigType) -> ConfigType:
     return config
 
 
-CONF_LOW_ENERGY = "low_energy"
-CONF_TUYA_ID = "tuya_id"
 CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
