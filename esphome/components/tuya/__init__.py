@@ -45,6 +45,7 @@ DATAPOINT_TYPES = {
 
 
 CONF_TUYA_ID = "tuya_id"
+CONF_LOW_ENERGY = "low_energy"
 
 
 def _validate_time_options(config: ConfigType) -> ConfigType:
@@ -74,6 +75,7 @@ CONFIG_SCHEMA = cv.All(
                     ),
                 }
             ),
+            cv.Optional(CONF_LOW_ENERGY, default=False): cv.boolean,
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -84,6 +86,8 @@ CONFIG_SCHEMA = cv.All(
 
 async def to_code(config):
     var = await uart.new_uart_component(config)
+    if config[CONF_LOW_ENERGY]:
+        cg.add_define("TUYA_LOW_ENERGY")
     if (time_id := config.get(CONF_TIME_ID)) is not None:
         await cg.add_variable(var.set_time_id, time_id)
         if config[CONF_FORCE_TIME_SYNC]:
