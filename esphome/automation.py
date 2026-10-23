@@ -21,7 +21,7 @@ from esphome.const import (
     CONF_TYPE_ID,
     CONF_UPDATE_INTERVAL,
 )
-from esphome.core import CORE, ID, EsphomeError, Lambda
+from esphome.core import CORE, ID, EsphomeError, HexInt, Lambda
 from esphome.cpp_generator import (
     FlashStringLiteral,
     LambdaExpression,
@@ -33,6 +33,32 @@ from esphome.cpp_generator import (
 from esphome.schema_extractors import SCHEMA_EXTRACT, schema_extractor
 from esphome.types import ConfigType, SafeExpType
 from esphome.util import Registry
+
+
+def progmem_bytes(name: str, data: bytes | list[int]) -> MockObj:
+    """Shared PROGMEM table for constant bytes; equal payloads share one, empty is nullptr."""
+    if not data:
+        return cg.nullptr
+    return cg.shared_progmem_array(
+        name, cg.uint8, cg.ArrayInitializer(*(HexInt(x) for x in data))
+    )
+
+
+async def templatable_bytes(
+    value: Any,
+    args: TemplateArgsType,
+    set_template: MockObj,
+    set_static: MockObj,
+    table_name: str,
+) -> None:
+    """Set a TemplatableBytes: a lambda via set_template, constant bytes via set_static."""
+    if cg.is_template(value):
+        fn = await cg.templatable(value, args, cg.std_vector.template(cg.uint8))
+        cg.add(set_template(fn))
+    elif len(value) > 0xFFFF:
+        raise EsphomeError(f"Byte payload is {len(value)} bytes; the maximum is 65535")
+    else:
+        cg.add(set_static(progmem_bytes(table_name, value), len(value)))
 
 
 def maybe_simple_id(*validators):
@@ -646,52 +672,20 @@ XorCondition = cg.esphome_ns.class_("XorCondition", Condition)
 
 
 @register_condition("and", AndCondition, validate_condition_list)
-async def and_condition_to_code(
-    config: ConfigType,
-    condition_id: ID,
-    template_arg: cg.TemplateArguments,
-    args: TemplateArgsType,
-) -> MockObj:
-    conditions = await build_condition_list(config, template_arg, args)
-    return cg.new_Pvariable(
-        condition_id, cg.TemplateArguments(len(conditions), *template_arg), conditions
-    )
-
-
-@register_condition("or", OrCondition, validate_condition_list)
-async def or_condition_to_code(
-    config: ConfigType,
-    condition_id: ID,
-    template_arg: cg.TemplateArguments,
-    args: TemplateArgsType,
-) -> MockObj:
-    conditions = await build_condition_list(config, template_arg, args)
-    return cg.new_Pvariable(
-        condition_id, cg.TemplateArguments(len(conditions), *template_arg), conditions
-    )
-
-
 @register_condition("all", AndCondition, validate_condition_list)
-async def all_condition_to_code(
-    config: ConfigType,
-    condition_id: ID,
-    template_arg: cg.TemplateArguments,
-    args: TemplateArgsType,
-) -> MockObj:
-    conditions = await build_condition_list(config, template_arg, args)
-    return cg.new_Pvariable(
-        condition_id, cg.TemplateArguments(len(conditions), *template_arg), conditions
-    )
-
-
+@register_condition("or", OrCondition, validate_condition_list)
 @register_condition("any", OrCondition, validate_condition_list)
-async def any_condition_to_code(
+@register_condition("xor", XorCondition, validate_condition_list)
+async def condition_group_to_code(
     config: ConfigType,
     condition_id: ID,
     template_arg: cg.TemplateArguments,
     args: TemplateArgsType,
 ) -> MockObj:
     conditions = await build_condition_list(config, template_arg, args)
+    # A group of one is that condition for and, or and xor; skip the wrapper.
+    if len(conditions) == 1:
+        return conditions[0]
     return cg.new_Pvariable(
         condition_id, cg.TemplateArguments(len(conditions), *template_arg), conditions
     )
@@ -706,19 +700,6 @@ async def not_condition_to_code(
 ) -> MockObj:
     condition = await build_condition(config, template_arg, args)
     return cg.new_Pvariable(condition_id, template_arg, condition)
-
-
-@register_condition("xor", XorCondition, validate_condition_list)
-async def xor_condition_to_code(
-    config: ConfigType,
-    condition_id: ID,
-    template_arg: cg.TemplateArguments,
-    args: TemplateArgsType,
-) -> MockObj:
-    conditions = await build_condition_list(config, template_arg, args)
-    return cg.new_Pvariable(
-        condition_id, cg.TemplateArguments(len(conditions), *template_arg), conditions
-    )
 
 
 @register_condition("lambda", LambdaCondition, cv.returning_lambda)

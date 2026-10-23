@@ -62,6 +62,12 @@ automation.register_apply_action(
     automation.ApplyCall("request_full_update()"),
 )
 
+automation.register_apply_condition(
+    "epaper_spi.is_updating",
+    automation.maybe_simple_id({cv.Required(CONF_ID): cv.use_id(EPaperBase)}),
+    "is_updating()",
+)
+
 # Import all models dynamically from the models package
 for module_info in pkgutil.iter_modules(models.__path__):
     importlib.import_module(f".models.{module_info.name}", package=__package__)
@@ -202,6 +208,7 @@ def _final_validate(config) -> None:
         else:
             # If no drawing methods are configured, and LVGL is not enabled, show a test card
             config[CONF_SHOW_TEST_CARD] = True
+            config[CONF_UPDATE_INTERVAL] = update_interval("1min")
     elif CONF_UPDATE_INTERVAL not in config:
         config[CONF_UPDATE_INTERVAL] = update_interval("1min")
 
